@@ -112,6 +112,61 @@ Notes:
   `checkpoints/last/pretrained_model` (per LeRobot il_sim docs).
 - `--output_dir` must be a fresh directory (timestamped names guarantee this).
 
+**Run 1 result (2026-07-28, run `diffusion_pusht_20260728_0823`):** trained
+clean, 200k steps in 4h15m (13.0 steps/s, ~5.0 GB VRAM per the log's
+`mem_gb`; ~6.2 GB process total per nvidia-smi), wandb
+`snowpine007/lerobot/runs/4eqo868n`. In-training 50-ep evals: 20 → 24 → 42 →
+44 → 38 → 34 → 48 → 44% (plateau ~40–48% from 75k). Final 500-episode eval
+(`/outputs/talking_to_robots/eval/diffusion_pusht_20260728_0823`):
+**41.6% success / 0.858 avg max reward** vs reference 65.4% / 0.955 — a real
+gap, not eval noise.
+
+**Root cause (config diff vs `lerobot/diffusion_pusht` train_config.json on
+the Hub):** lerobot 0.6.0's `--policy.type=diffusion` defaults drifted from
+the published PushT recipe. Substantive differences (ref → ours):
+
+| field | reference | 0.6.0 default (run 1) |
+|---|---|---|
+| `policy.horizon` | 16 | 64 |
+| `policy.n_action_steps` | 8 | 32 |
+| `policy.crop_shape` | [84, 84] random crop | None |
+| `policy.use_group_norm` | true | false |
+| `policy.pretrained_backbone_weights` | None (from scratch) | ImageNet ResNet18 |
+| `policy.use_separate_rgb_encoder_per_camera` | false | true (1 camera → minor) |
+
+The horizon/action-steps drift is the prime suspect: 32-step open-loop chunks
+give far less closed-loop correction than the paper's 8, matching the observed
+"gets close but can't finish" failures (avg max reward 0.86).
+
+Intuition: at each observation the policy predicts a whole *chunk* of future
+actions, then executes `n_action_steps` of them *open-loop* — blind, without
+taking a new observation — before stopping to look and re-plan. At PushT's
+10 fps, 32 steps means acting blind for ~3.2 s per plan vs ~0.8 s with the
+paper's 8 — 4× fewer chances to notice the block slipped and correct course.
+(Tradeoff: shorter chunks cost more inference per second and can jitter;
+longer chunks are smoother but drift.)
+
+**Run 1b (proposed): same command plus recipe-matching overrides** (verified
+2026-07-28 via a 2-step dry run — resolved config matches the reference
+values exactly; note the help text renders crop_shape as `[int int]` but the
+space-separated form is rejected, use the bracket string):
+
+```
+  --policy.horizon=16 --policy.n_action_steps=8 \
+  --policy.crop_shape="[84,84]" --policy.use_group_norm=true \
+  --policy.pretrained_backbone_weights=null \
+  --policy.use_separate_rgb_encoder_per_camera=false \
+```
+
+**Run 1b result (2026-07-28, run `diffusion_pusht_papercfg_20260728_1752`):**
+**69.2% success / 0.970 avg max reward on 500 episodes — beats the reference
+(65.4% / 0.955)**; gap fully explained by the config drift above. Trained in
+3h15m (17.1 steps/s — faster than run 1 because the 84×84 crop + single
+encoder shrink the model), wandb `snowpine007/lerobot/runs/v5fgp65v`.
+In-training 50-ep evals: 36 → 50 → 50 → 44 → 60 → 48 → 52 → 56%. Final eval
+artifacts: `/outputs/talking_to_robots/eval/diffusion_pusht_papercfg_20260728_1752`.
+Phase-1 success bar (≥ ~65% on 500 episodes) met.
+
 ### Eval + visualization (after training)
 
 ```bash
