@@ -66,8 +66,9 @@ uv run lerobot-train \
 ```
 
 **Probe result (2026-07-28, RTX 4090, run `diffusion_pusht_probe_20260728_0009`):**
-11.1 steps/s steady, 4.97 GB VRAM (`mem_gb` from train log), loss 1.0 → 0.039
-over 1k steps; 50-episode in-training eval works (0% success at 1k steps, as
+11.1 steps/s steady, 4.97 GB VRAM steady-state (`mem_gb` from train log;
+transient peak 5.29 GB), logged loss 0.88 (step 50) → 0.038 (step 950) at
+log_freq=50; 50-episode in-training eval works (0% success at 1k steps, as
 expected — reference needs 200k). Extrapolation: 200k steps ≈ 5.0 h train
 + ~1 min/eval × 8 evals ≈ **5–5.5 h wall-clock** → full 200k run is fine, no
 fallback needed.
