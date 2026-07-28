@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Run artifacts live in central /outputs (repo outputs/ is a symlink; keep it)
+wandb/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/

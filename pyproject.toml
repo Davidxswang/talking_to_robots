@@ -1,0 +1,14 @@
+[project]
+name = "talking-to-robots"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "lerobot[dataset-viz,diffusion,evaluation,pusht,smolvla,training]>=0.6.0",
+    "mujoco>=3.11.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.0",
+    "ty>=0.0.64",
+]
