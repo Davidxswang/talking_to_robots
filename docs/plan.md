@@ -55,14 +55,31 @@ cd ~/projects/talking_to_robots
 RUN=diffusion_pusht_probe_$(date +%Y%m%d_%H%M)
 mkdir -p /outputs/talking_to_robots/runs
 uv run lerobot-train \
-  --policy.type=diffusion --policy.device=cuda \
+  --policy.type=diffusion --policy.device=cuda --policy.push_to_hub=false \
   --dataset.repo_id=lerobot/pusht --env.type=pusht \
+  --eval.use_async_envs=false \
   --batch_size=64 --steps=1000 --log_freq=50 \
   --env_eval_freq=1000 --save_freq=1000 \
   --output_dir=/outputs/talking_to_robots/runs/$RUN \
   --job_name=$RUN --wandb.enable=false \
   2>&1 | tee /outputs/talking_to_robots/runs/$RUN.log
 ```
+
+**Probe result (2026-07-28, RTX 4090, run `diffusion_pusht_probe_20260728_0009`):**
+11.1 steps/s steady, 4.97 GB VRAM (`mem_gb` from train log), loss 1.0 → 0.039
+over 1k steps; 50-episode in-training eval works (0% success at 1k steps, as
+expected — reference needs 200k). Extrapolation: 200k steps ≈ 5.0 h train
++ ~1 min/eval × 8 evals ≈ **5–5.5 h wall-clock** → full 200k run is fine, no
+fallback needed.
+
+Two flags above were learned the hard way (both crash otherwise, lerobot 0.6.0):
+- `--policy.push_to_hub=false` — push-to-hub defaults ON and `cfg.validate()`
+  hard-fails without a `--policy.repo_id`.
+- `--eval.use_async_envs=false` — async vector-env workers raise
+  `NamespaceNotFound: gym_pusht` (worker subprocesses never import the package
+  that registers the env); sync envs are fine for cheap 2D PushT.
+- Also: `tee` masks the train command's exit code — prefix with
+  `set -o pipefail` when scripting these.
 
 Watch `nvidia-smi` (expect comfortable headroom on 24 GB) and read steps/s from
 the log; extrapolate: `200_000 / steps_per_s / 3600` hours. If the full 200k
@@ -76,8 +93,9 @@ guide: shorten the schedule when you shorten training).
 cd ~/projects/talking_to_robots
 RUN=diffusion_pusht_$(date +%Y%m%d_%H%M)
 uv run lerobot-train \
-  --policy.type=diffusion --policy.device=cuda \
+  --policy.type=diffusion --policy.device=cuda --policy.push_to_hub=false \
   --dataset.repo_id=lerobot/pusht --env.type=pusht \
+  --eval.use_async_envs=false \
   --batch_size=64 --steps=200000 \
   --env_eval_freq=25000 --save_freq=25000 --seed=100000 \
   --output_dir=/outputs/talking_to_robots/runs/$RUN \
@@ -130,5 +148,8 @@ Language-conditioned run. Per the SmolVLA docs page
 - All run artifacts → `/outputs/talking_to_robots/` (never repo-local).
 - Per-run `.log` file via `tee` for every long job (see commands above).
 - No GPU launches while owner sleeps; queue for morning go-ahead.
+- Don't saturate the machine while the owner is actively using it (it's their
+  daily-driver desktop) — modest footprint by default, full-throttle only on
+  dedicated unattended runs with go-ahead.
 - Feature branches + PRs after the initial scaffold commit; owner merges.
-- No GitHub remote yet — owner decides on publishing later.
+- Remote: `github.com/Davidxswang/talking_to_robots` (public, since 2026-07-27).
