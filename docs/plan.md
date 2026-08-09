@@ -31,7 +31,28 @@ Goal: a fun, community-meaningful robot-learning project built on LeRobot.
   (`~/.cache/huggingface/lerobot/hub/datasets--lerobot--pusht/`). Small enough
   to stay in the HF cache; no copy under `/data` needed.
 - Artifacts: everything under central `/outputs/talking_to_robots/` (repo
-  `outputs/` symlinks there).
+  `outputs/` symlinks there). **One self-contained folder per run**
+  (layout adopted 2026-08-09; older artifacts migrated in place):
+
+  ```
+  /outputs/talking_to_robots/<run_name>/
+    train.log   # tee'd lerobot-train output
+    train/      # lerobot-train --output_dir (checkpoints/, wandb/, in-training eval/)
+    eval.log    # tee'd lerobot-eval output (final eval)
+    eval/       # lerobot-eval --output_dir (eval_info.json, videos/)
+  ```
+
+  This is the shape for new runs; migrated pre-2026-08-09 runs carry only the
+  pieces they produced (e.g. crashed probes have just `train.log`, the dry run
+  just `train/`).
+
+  Why `train/` is a subfolder: lerobot-train refuses to start if its
+  `--output_dir` already exists as a directory (unless `--resume=true`;
+  `TrainPipelineConfig.validate()`), and the run folder must exist before
+  `tee` can write `train.log` into it — so the trainer gets a
+  not-yet-existing subdir inside the run folder. `lerobot-eval` has no such
+  check — which cuts both ways: it will silently overwrite an existing
+  `eval/` (see the eval block's warning).
 - Smoke test passed 2026-07-27 (CPU only): `uv run python scripts/smoke_test.py`
   loads the dataset, builds the 262.7M-param Diffusion Policy via
   `make_policy`, runs one forward pass (loss ≈ 1.02).
@@ -53,16 +74,17 @@ measure on a probe first**:
 ```bash
 cd ~/projects/talking_to_robots
 RUN=diffusion_pusht_probe_$(date +%Y%m%d_%H%M)
-mkdir -p /outputs/talking_to_robots/runs
+RUN_DIR=/outputs/talking_to_robots/$RUN
+mkdir -p $RUN_DIR
 uv run lerobot-train \
   --policy.type=diffusion --policy.device=cuda --policy.push_to_hub=false \
   --dataset.repo_id=lerobot/pusht --env.type=pusht \
   --eval.use_async_envs=false \
   --batch_size=64 --steps=1000 --log_freq=50 \
   --env_eval_freq=1000 --save_freq=1000 \
-  --output_dir=/outputs/talking_to_robots/runs/$RUN \
+  --output_dir=$RUN_DIR/train \
   --job_name=$RUN --wandb.enable=false \
-  2>&1 | tee /outputs/talking_to_robots/runs/$RUN.log
+  2>&1 | tee $RUN_DIR/train.log
 ```
 
 **Probe result (2026-07-28, RTX 4090, run `diffusion_pusht_probe_20260728_0009`):**
@@ -93,31 +115,34 @@ guide: shorten the schedule when you shorten training).
 ```bash
 cd ~/projects/talking_to_robots
 RUN=diffusion_pusht_$(date +%Y%m%d_%H%M)
+RUN_DIR=/outputs/talking_to_robots/$RUN
+mkdir -p $RUN_DIR
 uv run lerobot-train \
   --policy.type=diffusion --policy.device=cuda --policy.push_to_hub=false \
   --dataset.repo_id=lerobot/pusht --env.type=pusht \
   --eval.use_async_envs=false \
   --batch_size=64 --steps=200000 \
   --env_eval_freq=25000 --save_freq=25000 --seed=100000 \
-  --output_dir=/outputs/talking_to_robots/runs/$RUN \
+  --output_dir=$RUN_DIR/train \
   --job_name=$RUN --wandb.enable=true \
-  2>&1 | tee /outputs/talking_to_robots/runs/$RUN.log
+  2>&1 | tee $RUN_DIR/train.log
 ```
 
 Notes:
 - wandb login already present in `~/.netrc`; `--wandb.enable=true` verified in
   the 0.6.0 CLI. In-env eval during training comes from `--env.type=pusht` +
   `--env_eval_freq` (flag renamed from the model card's old `--eval_freq`).
-- Checkpoints land in `$RUN/checkpoints/<step>/pretrained_model` and
+- Checkpoints land in `$RUN_DIR/train/checkpoints/<step>/pretrained_model` and
   `checkpoints/last/pretrained_model` (per LeRobot il_sim docs).
-- `--output_dir` must be a fresh directory (timestamped names guarantee this).
+- `--output_dir` must be a fresh (not yet existing) directory — hence the
+  `train/` subdir inside the pre-created run folder (see layout above).
 
 **Run 1 result (2026-07-28, run `diffusion_pusht_20260728_0823`):** trained
 clean, 200k steps in 4h15m (13.0 steps/s, ~5.0 GB VRAM per the log's
 `mem_gb`; ~6.2 GB process total per nvidia-smi), wandb
 `snowpine007/lerobot/runs/4eqo868n`. In-training 50-ep evals: 20 → 24 → 42 →
 44 → 38 → 34 → 48 → 44% (plateau ~40–48% from 75k). Final 500-episode eval
-(`/outputs/talking_to_robots/eval/diffusion_pusht_20260728_0823`):
+(`/outputs/talking_to_robots/diffusion_pusht_20260728_0823/eval`):
 **41.6% success / 0.858 avg max reward** vs reference 65.4% / 0.955 — a real
 gap, not eval noise.
 
@@ -164,18 +189,24 @@ space-separated form is rejected, use the bracket string):
 3h15m (17.1 steps/s — faster than run 1 because the 84×84 crop + single
 encoder shrink the model), wandb `snowpine007/lerobot/runs/v5fgp65v`.
 In-training 50-ep evals: 36 → 50 → 50 → 44 → 60 → 48 → 52 → 56%. Final eval
-artifacts: `/outputs/talking_to_robots/eval/diffusion_pusht_papercfg_20260728_1752`.
+artifacts: `/outputs/talking_to_robots/diffusion_pusht_papercfg_20260728_1752/eval`.
 Phase-1 success bar (≥ ~65% on 500 episodes) met.
 
 ### Eval + visualization (after training)
 
 ```bash
 # 50-episode eval of the final checkpoint (writes eval videos to output_dir)
+RUN=<run_name>   # the run to evaluate — set explicitly, don't rely on the shell
+RUN_DIR=/outputs/talking_to_robots/$RUN
+# lerobot-eval does NOT refuse an existing output_dir — it silently overwrites
+# eval_info.json and mixes videos. If $RUN_DIR/eval already exists, evaluate
+# into a fresh sibling (e.g. eval_50ep_YYYYMMDD/) instead; never overwrite.
+[ ! -e $RUN_DIR/eval ] || { echo "eval/ exists — pick a fresh dir"; exit 1; }
 uv run lerobot-eval \
-  --policy.path=/outputs/talking_to_robots/runs/$RUN/checkpoints/last/pretrained_model \
+  --policy.path=$RUN_DIR/train/checkpoints/last/pretrained_model \
   --env.type=pusht --eval.n_episodes=50 --eval.batch_size=10 \
-  --output_dir=/outputs/talking_to_robots/eval/$RUN \
-  2>&1 | tee /outputs/talking_to_robots/eval/$RUN.log
+  --output_dir=$RUN_DIR/eval \
+  2>&1 | tee $RUN_DIR/eval.log
 
 # dataset visualization (rerun viewer)
 uv run lerobot-dataset-viz --repo-id lerobot/pusht --episode-index 0
@@ -201,7 +232,9 @@ Language-conditioned run. Per the SmolVLA docs page
 
 ## Rules of the road
 
-- All run artifacts → `/outputs/talking_to_robots/` (never repo-local).
+- All run artifacts → `/outputs/talking_to_robots/<run_name>/` — one
+  self-contained folder per run, logs included (never repo-local, no sibling
+  files outside the run folder; layout in the Environment section).
 - Per-run `.log` file via `tee` for every long job (see commands above).
 - No GPU launches while owner sleeps; queue for morning go-ahead.
 - Don't saturate the machine while the owner is actively using it (it's their
