@@ -215,20 +215,71 @@ uv run lerobot-dataset-viz --repo-id lerobot/pusht --episode-index 0
 Success bar: reference checkpoint reports 65.4% success / 0.955 max-overlap
 over 500 episodes; anywhere near that on 50 episodes = phase-1 win.
 
-### Run 2 (later this week): SmolVLA fine-tune
+### Run 2: SmolVLA fine-tune (DONE 2026-08-11)
 
-Language-conditioned run. Per the SmolVLA docs page
-(hf.co/docs/lerobot/main/en/smolvla):
-- Base checkpoint: `lerobot/smolvla_base` (450M params; `smolvla` extra
-  already installed).
-- Fine-tune command shape: `lerobot-train --policy.path=lerobot/smolvla_base
-  --dataset.repo_id=<dataset> --batch_size=64 --steps=20000 ...`.
-- Docs: 20k steps ≈ 4 h on an A100; hardware guide: smolvla ~10–16 GB VRAM →
-  fits the 4090, expect slower than A100 (measure on a probe).
-- Dataset requirement: LeRobotDataset with a natural-language task string.
-  `lerobot/pusht` carries one ("Push the T-shaped block onto the T-shaped
-  target.") but is single-task/no-camera-variety; pick a richer dataset (e.g.
-  `lerobot/svla_so100_pickplace` from the SmolVLA paper) — decide with owner.
+Language-conditioned run: fine-tune `lerobot/smolvla_base` (450M) on
+`lerobot/svla_so100_pickplace` (owner-approved default; 50 episodes /
+19,631 frames / 30 fps, SO-100 arm, cameras `top` + `wrist`, one task:
+"Pick up the cube and place it in the box.").
+
+**Command** (validated via 2-step dry runs + 300-step probe; probe:
+1.48 steps/s, 14.4 GB VRAM):
+
+```bash
+cd ~/projects/talking_to_robots
+RUN=smolvla_pickplace_$(date +%Y%m%d_%H%M)
+RUN_DIR=/outputs/talking_to_robots/$RUN
+mkdir -p $RUN_DIR
+uv run lerobot-train \
+  --policy.path=lerobot/smolvla_base --policy.device=cuda --policy.push_to_hub=false \
+  --dataset.repo_id=lerobot/svla_so100_pickplace \
+  --rename_map='{"observation.images.top": "observation.images.camera1", "observation.images.wrist": "observation.images.camera2"}' \
+  --batch_size=64 --steps=20000 --log_freq=100 --save_freq=2500 \
+  --output_dir=$RUN_DIR/train --job_name=$RUN --wandb.enable=true \
+  2>&1 | tee $RUN_DIR/train.log
+```
+
+Gotchas learned:
+- `smolvla_base` expects generic camera slots `camera1/2/3`; the dataset
+  ships `top`/`wrist` → `--rename_map` required.
+  `validate_visual_features_consistency` accepts a subset in either
+  direction, so 2-of-3 cameras is fine; with this run's
+  `empty_cameras: 0` the missing `camera3` is simply dropped — the model
+  sees 2 images, identically at train and inference (padding with empty
+  masked images exists but only activates when `empty_cameras > 0`;
+  `modeling_smolvla.py:446`).
+- The rename map is baked into the saved preprocessor
+  (`policy_preprocessor.json` step 0) — inference with dataset-native
+  keys just works; no manual renaming.
+- Config comes FROM the checkpoint (`--policy.path`), not library
+  defaults — the run-1 drift trap doesn't apply. Resolved snapshot
+  verified anyway: action-expert-only training, frozen vision encoder,
+  chunk 50 / n_action_steps 50, lr 1e-4 cosine.
+- Do not append `; echo EXIT=$?` on the same line as the pipeline — it
+  masks the exit code even with pipefail. Echo it as a separate command.
+
+**Result (run `smolvla_pickplace_20260811_0823`):** trained clean, 20k
+steps in 3h02m (1.83 steps/s, 14.4 GB), wandb `snowpine007/lerobot/runs/e0b0antu`.
+Loss 0.46 (step 100) → 0.096 (2.5k) → 0.058 (5.4k) → 0.030 (10.5k) →
+0.019 (15.4k) → **0.017 (20k)** — ≈65 epochs over 50 demos, normal for
+BC on small demo sets. (Note: the log's `step:NK` labels round to the
+nearest K; values here are matched to exact steps via checkpoint
+timestamps.) 8 checkpoints + `last`.
+
+**Eval — open-loop only.** This is a real-robot dataset: no simulator
+exists for it, so there is no success-rate rollout (closed-loop eval
+returns in Phase 2 where we own the env as code). Instead:
+predicted-vs-ground-truth action chunks on 200 frames × 5 episodes
+(`eval_openloop/` in the run dir; self-contained script + metrics +
+plots). **Caveat stated on every artifact: the fine-tune used all 50
+episodes (no held-out split), so this measures reproduction fidelity on
+training demonstrations, NOT generalization.**
+- Overall MAE 0.69 joint-units (RMSE 1.48); per-joint MAE = 2.2–4.7% of
+  each joint's action std; gripper transients tracked.
+- **Error grows along the 50-step chunk: MAE 0.51 (h=1) → 0.66 (h=30) →
+  1.11 (h=50)** — flat for ~1 s then accelerating. Open-loop drift
+  measured in our own model; empirical support for re-planning before
+  chunk exhaustion (the run-1b lesson, now quantified).
 
 ## Rules of the road
 
